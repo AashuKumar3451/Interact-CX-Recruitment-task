@@ -75,7 +75,7 @@ def handle_current_weather(city, api_key):
         return error_response(f"Error fetching weather data: {str(e)}")
 
 def handle_date_specific_weather(city, date_param, api_key):
-    """Handle requests for weather on specific dates"""
+    """Handle requests for weather on specific dates and times"""
     try:
         # Get forecast data (5-day forecast with 3-hour intervals)
         forecast_url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric"
@@ -84,60 +84,89 @@ def handle_date_specific_weather(city, date_param, api_key):
         if forecast_data.get('cod') != '200':
             return error_response(f"Could not find forecast data for {city}")
         
-        # Parse the requested date
+        # Parse requested datetime
         try:
             if isinstance(date_param, str):
-                requested_date = datetime.strptime(date_param, '%Y-%m-%dT%H:%M:%S%z').date()
+                requested_datetime = datetime.strptime(date_param, '%Y-%m-%dT%H:%M:%S%z')
             else:
-                # Handle Dialogflow's date object format
-                requested_date = datetime(
+                requested_datetime = datetime(
                     date_param['year'],
                     date_param['month'],
-                    date_param['day']
-                ).date()
-        except:
-            requested_date = datetime.now().date()
+                    date_param['day'],
+                    date_param.get('hours', 0),
+                    date_param.get('minutes', 0)
+                )
+        except Exception as e:
+            requested_datetime = datetime.now()
         
-        # Find matching forecasts for the requested date
+        requested_date = requested_datetime.date()
+        requested_time = requested_datetime.time()
+
+        # Find all forecasts for that date
         matching_forecasts = []
         for item in forecast_data['list']:
-            forecast_time = datetime.fromtimestamp(item['dt'])
+            forecast_time = datetime.utcfromtimestamp(item['dt'])  # Forecasts are in UTC
             if forecast_time.date() == requested_date:
                 matching_forecasts.append(item)
         
         if not matching_forecasts:
             return error_response(f"No forecast available for {requested_date.strftime('%Y-%m-%d')}")
         
-        # Calculate day statistics (min/max temp, etc.)
-        temps = [f['main']['temp'] for f in matching_forecasts]
-        conditions = [f['weather'][0]['description'] for f in matching_forecasts]
+        # If time is also provided (hours and minutes), find closest forecast
+        if date_param and ('T' in date_param):
+            # Find the forecast closest to the requested time
+            closest_forecast = min(
+                matching_forecasts,
+                key=lambda x: abs(datetime.utcfromtimestamp(x['dt']) - requested_datetime)
+            )
+            
+            forecast_time = datetime.utcfromtimestamp(closest_forecast['dt'])
+            weather_desc = closest_forecast['weather'][0]['description']
+            temp = closest_forecast['main']['temp']
+            
+            response_text = (
+                f"Weather forecast for {city} on {forecast_time.strftime('%A, %B %d at %H:%M')}:\n"
+                f"• Condition: {weather_desc.capitalize()}\n"
+                f"• Temperature: {temp:.1f}°C"
+            )
+            
+            return jsonify({
+                "fulfillmentText": response_text,
+                "payload": {
+                    "city": city,
+                    "date_time": forecast_time.strftime('%Y-%m-%d %H:%M'),
+                    "condition": weather_desc,
+                    "temperature": temp
+                }
+            })
         
-        # Get most common condition
-        from collections import Counter
-        common_condition = Counter(conditions).most_common(1)[0][0]
-        
-        # Format response
-        response = {
-            "fulfillmentText": (
+        else:
+            # Only date provided: calculate day summary (your existing logic)
+            temps = [f['main']['temp'] for f in matching_forecasts]
+            conditions = [f['weather'][0]['description'] for f in matching_forecasts]
+            
+            from collections import Counter
+            common_condition = Counter(conditions).most_common(1)[0][0]
+            
+            response_text = (
                 f"Weather forecast for {city} on {requested_date.strftime('%A, %B %d')}:\n"
                 f"• Expected condition: {common_condition.capitalize()}\n"
                 f"• High temperature: {max(temps):.1f}°C\n"
                 f"• Low temperature: {min(temps):.1f}°C\n"
-                f"• Average temperature: {sum(temps)/len(temps):.1f}°C\n"
-                f"• Number of forecasts: {len(matching_forecasts)}"
-            ),
-            "payload": {
-                "city": city,
-                "date": requested_date.strftime('%Y-%m-%d'),
-                "condition": common_condition,
-                "high_temp": max(temps),
-                "low_temp": min(temps),
-                "avg_temp": sum(temps)/len(temps),
-                "forecast_count": len(matching_forecasts)
-            }
-        }
-        
-        return jsonify(response)
+                f"• Average temperature: {sum(temps)/len(temps):.1f}°C"
+            )
+            
+            return jsonify({
+                "fulfillmentText": response_text,
+                "payload": {
+                    "city": city,
+                    "date": requested_date.strftime('%Y-%m-%d'),
+                    "condition": common_condition,
+                    "high_temp": max(temps),
+                    "low_temp": min(temps),
+                    "avg_temp": sum(temps)/len(temps)
+                }
+            })
         
     except Exception as e:
         return error_response(f"Error processing forecast: {str(e)}")
