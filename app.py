@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 from datetime import datetime, timedelta
-import pytz  # For timezone handling
+import pytz
 from collections import Counter
 
 app = Flask(__name__)
@@ -11,35 +11,26 @@ def webhook():
     data = request.get_json()
     city = data['queryResult']['parameters']['city']
     date_param = data['queryResult']['parameters'].get('date', '')
-    
-    # Get OpenWeather API key (store this securely in production)
     api_key = "2a95869d7db96ee13f7b80a10ec8197c"
-    
-    # Determine if we need current weather or forecast
     if date_param:
         return handle_date_specific_weather(city, date_param, api_key)
     else:
         return handle_current_weather(city, api_key)
 
 def handle_current_weather(city, api_key):
-    """Handle requests for current weather"""
     try:
         current_url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
         current_data = requests.get(current_url).json()
-        
         if current_data.get('cod') != 200:
             return error_response(f"Could not find weather data for {city}")
-        
         weather = current_data['weather'][0]
         main = current_data['main']
         wind = current_data.get('wind', {})
         sys = current_data.get('sys', {})
-        
-        timezone = pytz.timezone('UTC')  # OpenWeather returns UTC times
+        timezone = pytz.timezone('UTC')
         sunrise = datetime.fromtimestamp(sys.get('sunrise', 0), tz=timezone)
         sunset = datetime.fromtimestamp(sys.get('sunset', 0), tz=timezone)
         current_time = datetime.now(timezone)
-        
         response = {
             "fulfillmentText": (
                 f"Current weather in {city}:\n"
@@ -63,22 +54,16 @@ def handle_current_weather(city, api_key):
                 "timestamp": current_time.isoformat()
             }
         }
-        
         return jsonify(response)
-        
     except Exception as e:
         return error_response(f"Error fetching weather data: {str(e)}")
 
 def handle_date_specific_weather(city, date_param, api_key):
-    """Handle requests for weather on specific dates and times"""
     try:
         forecast_url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric"
         forecast_data = requests.get(forecast_url).json()
-        
         if forecast_data.get('cod') != '200':
             return error_response(f"Could not find forecast data for {city}")
-        
-        # Parse requested datetime
         try:
             if isinstance(date_param, str) and 'T' in date_param:
                 requested_datetime = datetime.strptime(date_param, '%Y-%m-%dT%H:%M:%S%z')
@@ -93,78 +78,47 @@ def handle_date_specific_weather(city, date_param, api_key):
                 )
         except Exception:
             requested_datetime = datetime.now(pytz.UTC)
-
-        requested_date = requested_datetime.date()
-
-        # Find all forecasts for that date
-        matching_forecasts = []
+        start_date = requested_datetime.date()
+        end_date = start_date + timedelta(days=7)
+        daily_forecasts = {}
         for item in forecast_data['list']:
             forecast_time = datetime.utcfromtimestamp(item['dt']).replace(tzinfo=pytz.UTC)
-            if forecast_time.date() == requested_date:
-                matching_forecasts.append(item)
-        
-        if not matching_forecasts:
-            return error_response(f"No forecast available for {requested_date.strftime('%Y-%m-%d')}")
-        
-        # If time is provided, find the closest forecast
-        if isinstance(date_param, str) and 'T' in date_param:
-            closest_forecast = min(
-                matching_forecasts,
-                key=lambda x: abs(datetime.utcfromtimestamp(x['dt']).replace(tzinfo=pytz.UTC) - requested_datetime)
-            )
-
-            forecast_time = datetime.utcfromtimestamp(closest_forecast['dt']).replace(tzinfo=pytz.UTC)
-            weather_desc = closest_forecast['weather'][0]['description']
-            temp = closest_forecast['main']['temp']
-            
-            response_text = (
-                f"Weather forecast for {city} on {forecast_time.strftime('%A, %B %d at %H:%M')}:\n"
-                f"• Condition: {weather_desc.capitalize()}\n"
-                f"• Temperature: {temp:.1f}°C"
-            )
-            
-            return jsonify({
-                "fulfillmentText": response_text,
-                "payload": {
-                    "city": city,
-                    "date_time": forecast_time.strftime('%Y-%m-%d %H:%M'),
-                    "condition": weather_desc,
-                    "temperature": temp
-                }
-            })
-        
-        else:
-            # Only date provided: calculate daily summary
-            temps = [f['main']['temp'] for f in matching_forecasts]
-            conditions = [f['weather'][0]['description'] for f in matching_forecasts]
-            
+            if start_date <= forecast_time.date() <= end_date:
+                day = forecast_time.date().isoformat()
+                if day not in daily_forecasts:
+                    daily_forecasts[day] = []
+                daily_forecasts[day].append(item)
+        if not daily_forecasts:
+            return error_response(f"No forecast available from {start_date.strftime('%Y-%m-%d')}")
+        response_text = f"Weather forecast for {city} starting {start_date.strftime('%A, %B %d')}:\n\n"
+        payload = {}
+        for day, forecasts in daily_forecasts.items():
+            temps = [f['main']['temp'] for f in forecasts]
+            conditions = [f['weather'][0]['description'] for f in forecasts]
             common_condition = Counter(conditions).most_common(1)[0][0]
-            
-            response_text = (
-                f"Weather forecast for {city} on {requested_date.strftime('%A, %B %d')}:\n"
-                f"• Expected condition: {common_condition.capitalize()}\n"
-                f"• High temperature: {max(temps):.1f}°C\n"
-                f"• Low temperature: {min(temps):.1f}°C\n"
-                f"• Average temperature: {sum(temps)/len(temps):.1f}°C"
+            response_text += (
+                f"{datetime.strptime(day, '%Y-%m-%d').strftime('%A, %b %d')}:\n"
+                f"• Condition: {common_condition.capitalize()}\n"
+                f"• High: {max(temps):.1f}°C\n"
+                f"• Low: {min(temps):.1f}°C\n\n"
             )
-            
-            return jsonify({
-                "fulfillmentText": response_text,
-                "payload": {
-                    "city": city,
-                    "date": requested_date.strftime('%Y-%m-%d'),
-                    "condition": common_condition,
-                    "high_temp": max(temps),
-                    "low_temp": min(temps),
-                    "avg_temp": sum(temps) / len(temps)
-                }
-            })
-        
+            payload[day] = {
+                "condition": common_condition,
+                "high_temp": max(temps),
+                "low_temp": min(temps),
+                "avg_temp": sum(temps) / len(temps)
+            }
+        return jsonify({
+            "fulfillmentText": response_text.strip(),
+            "payload": {
+                "city": city,
+                "forecast": payload
+            }
+        })
     except Exception as e:
         return error_response(f"Error processing forecast: {str(e)}")
 
 def error_response(message):
-    """Helper function for error responses"""
     return jsonify({
         "fulfillmentText": message,
         "payload": {
