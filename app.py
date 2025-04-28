@@ -36,21 +36,11 @@ def handle_current_weather(city, api_key):
                 f"Current weather in {city}:\n"
                 f"• Condition: {weather['description'].capitalize()}\n"
                 f"• Temperature: {main['temp']}°C (feels like {main['feels_like']}°C)\n"
-                f"• Humidity: {main['humidity']}%\n"
-                f"• Wind: {wind.get('speed', 'N/A')} m/s, {wind.get('deg', 'N/A')}°\n"
-                f"• Pressure: {main['pressure']} hPa\n"
-                f"• Sunrise: {sunrise.strftime('%H:%M')}\n"
-                f"• Sunset: {sunset.strftime('%H:%M')}"
             ),
             "payload": {
                 "city": city,
                 "temperature": main['temp'],
                 "condition": weather['description'],
-                "humidity": main['humidity'],
-                "wind_speed": wind.get('speed'),
-                "wind_direction": wind.get('deg'),
-                "sunrise": sunrise.strftime('%H:%M'),
-                "sunset": sunset.strftime('%H:%M'),
                 "timestamp": current_time.isoformat()
             }
         }
@@ -99,13 +89,9 @@ def handle_date_specific_weather(city, date_param, api_key):
             response_text += (
                 f"{datetime.strptime(day, '%Y-%m-%d').strftime('%A, %b %d')}:\n"
                 f"• Condition: {common_condition.capitalize()}\n"
-                f"• High: {max(temps):.1f}°C\n"
-                f"• Low: {min(temps):.1f}°C\n\n"
             )
             payload[day] = {
                 "condition": common_condition,
-                "high_temp": max(temps),
-                "low_temp": min(temps),
                 "avg_temp": sum(temps) / len(temps)
             }
         return jsonify({
